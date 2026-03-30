@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YEET — Local P2P Transfer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Pairing View -->
+  <div id="view-pairing" class="view active">
+    <div class="container">
+      <header class="pairing-header">
+        <h1>YEET</h1>
+        <p class="tagline">local p2p transfer &amp; shared clipboard</p>
+        <p class="device-name">you are <span id="my-name">—</span></p>
+      </header>
+
+      <div id="pairing-start" class="pairing-step">
+        <button id="btn-create" class="btn btn-primary">Create Room</button>
+        <button id="btn-join" class="btn">Join Room</button>
+      </div>
+
+      <!-- Initiator flow -->
+      <div id="pairing-offer" class="pairing-step hidden">
+        <p class="step-label">1 / 2 — share this code with the other device</p>
+        <textarea id="offer-code" class="code-area" readonly></textarea>
+        <button id="btn-copy-offer" class="btn btn-primary">Copy Code</button>
+        <p class="step-label">then paste their response code here</p>
+        <textarea id="answer-input" class="code-area" placeholder="paste answer code..."></textarea>
+        <button id="btn-submit-answer" class="btn btn-primary">Connect</button>
+      </div>
+
+      <!-- Joiner flow -->
+      <div id="pairing-join" class="pairing-step hidden">
+        <p class="step-label">1 / 2 — paste the room code</p>
+        <textarea id="offer-input" class="code-area" placeholder="paste room code..."></textarea>
+        <button id="btn-submit-offer" class="btn btn-primary">Submit</button>
+      </div>
+
+      <div id="pairing-answer" class="pairing-step hidden">
+        <p class="step-label">2 / 2 — share this code back to the other device</p>
+        <textarea id="answer-code" class="code-area" readonly></textarea>
+        <button id="btn-copy-answer" class="btn btn-primary">Copy Code</button>
+        <p class="step-label waiting">waiting for connection...</p>
+      </div>
+
+      <p id="pairing-status" class="status"></p>
+    </div>
+  </div>
+
+  <!-- Connected View -->
+  <div id="view-connected" class="view">
+    <header class="connected-header">
+      <div class="header-left">
+        <h1>YEET</h1>
+        <span id="connection-status" class="status-dot connected"></span>
+        <span id="peer-name">—</span>
+      </div>
+      <button id="btn-disconnect" class="btn btn-small">Disconnect</button>
+    </header>
+
+    <div id="message-log" class="message-log"></div>
+
+    <div class="input-bar">
+      <textarea id="message-input" class="message-input" placeholder="type or paste..." rows="1"></textarea>
+      <button id="btn-send" class="btn btn-primary">Send</button>
+    </div>
+  </div>
+
+  <!-- Disconnected View -->
+  <div id="view-disconnected" class="view">
+    <div class="container">
+      <h1>YEET</h1>
+      <p class="status disconnected">connection lost</p>
+      <button id="btn-reconnect" class="btn btn-primary">Reconnect</button>
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
