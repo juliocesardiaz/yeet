@@ -61,7 +61,8 @@ async function startCreate() {
 
     $('#offer-code').value = code;
     $('#pairing-offer').classList.remove('hidden');
-    setStatus(`code length: ${code.length} chars`, '');
+    const wordCount = code.split(/\s+/).length;
+    setStatus(`${wordCount} words — copy and share`, '');
   } catch (err) {
     setStatus('error: ' + err.message, 'error');
   }
@@ -90,7 +91,8 @@ async function submitOffer() {
     $('#pairing-join').classList.add('hidden');
     $('#answer-code').value = answerCode;
     $('#pairing-answer').classList.remove('hidden');
-    setStatus(`answer code length: ${answerCode.length} chars`, '');
+    const wordCount = answerCode.split(/\s+/).length;
+    setStatus(`${wordCount} words — copy and share back`, '');
   } catch (err) {
     setStatus('error: ' + err.message, 'error');
   }

@@ -53,7 +53,7 @@ export class RTCManager {
     await this.pc.setLocalDescription(offer);
     await this._waitForICE();
 
-    return mungeSDP(this.pc.localDescription.sdp);
+    return this.pc.localDescription.sdp;
   }
 
   async acceptOffer(sdp) {
@@ -68,7 +68,7 @@ export class RTCManager {
     await this.pc.setLocalDescription(answer);
     await this._waitForICE();
 
-    return mungeSDP(this.pc.localDescription.sdp);
+    return this.pc.localDescription.sdp;
   }
 
   async acceptAnswer(sdp) {
@@ -91,19 +91,4 @@ export class RTCManager {
       this.pc = null;
     }
   }
-}
-
-function mungeSDP(sdp) {
-  const dominated = [
-    'a=extmap',
-    'a=msid-semantic',
-    'a=group:BUNDLE',
-    'a=rtcp-mux',
-    'a=rtcp:',
-  ];
-
-  return sdp
-    .split('\r\n')
-    .filter(line => !dominated.some(prefix => line.startsWith(prefix)))
-    .join('\r\n');
 }
