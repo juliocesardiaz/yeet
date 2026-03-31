@@ -7,7 +7,9 @@ export class RTCManager {
   }
 
   _createPC() {
-    this.pc = new RTCPeerConnection({ iceServers: [] });
+    this.pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    });
 
     this.pc.onconnectionstatechange = () => {
       const state = this.pc.connectionState;
@@ -37,8 +39,12 @@ export class RTCManager {
         resolve();
         return;
       }
+      const timeout = setTimeout(() => resolve(), 10000);
       this.pc.onicegatheringstatechange = () => {
-        if (this.pc.iceGatheringState === 'complete') resolve();
+        if (this.pc.iceGatheringState === 'complete') {
+          clearTimeout(timeout);
+          resolve();
+        }
       };
     });
   }

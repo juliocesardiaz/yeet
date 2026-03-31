@@ -133,6 +133,22 @@ h1 {
   max-width: 300px;
 }
 
+.btn-back {
+  align-self: flex-start;
+  font-family: var(--font);
+  font-size: 0.75rem;
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  cursor: pointer;
+  padding: 0;
+  margin-bottom: 0.25rem;
+}
+
+.btn-back:hover {
+  color: var(--accent);
+}
+
 .step-label {
   color: var(--fg-dim);
   font-size: 0.8rem;

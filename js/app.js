@@ -40,12 +40,14 @@ function init() {
     }
   });
 
+  // Home buttons (Start Over)
+  document.querySelectorAll('[data-home]').forEach(btn => {
+    btn.addEventListener('click', goHome);
+  });
+
   // Disconnect / reconnect
   $('#btn-disconnect').addEventListener('click', doDisconnect);
-  $('#btn-reconnect').addEventListener('click', () => {
-    showView('view-pairing');
-    resetPairing();
-  });
+  $('#btn-reconnect').addEventListener('click', goHome);
 }
 
 async function startCreate() {
@@ -144,6 +146,15 @@ function sendMessage() {
   addMessage(text, 'self', Date.now());
   input.value = '';
   input.focus();
+}
+
+function goHome() {
+  if (rtc) {
+    rtc.disconnect();
+    rtc = null;
+  }
+  showView('view-pairing');
+  resetPairing();
 }
 
 function doDisconnect() {

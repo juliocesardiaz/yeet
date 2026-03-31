@@ -27,6 +27,7 @@
 
       <!-- Initiator flow -->
       <div id="pairing-offer" class="pairing-step hidden">
+        <button class="btn-back" data-home>&larr; Start Over</button>
         <p class="step-label">1 / 2 — share this code with the other device</p>
         <textarea id="offer-code" class="code-area" readonly></textarea>
         <button id="btn-copy-offer" class="btn btn-primary">Copy Code</button>
@@ -37,12 +38,14 @@
 
       <!-- Joiner flow -->
       <div id="pairing-join" class="pairing-step hidden">
+        <button class="btn-back" data-home>&larr; Start Over</button>
         <p class="step-label">1 / 2 — paste the room code</p>
         <textarea id="offer-input" class="code-area" placeholder="paste room words..."></textarea>
         <button id="btn-submit-offer" class="btn btn-primary">Submit</button>
       </div>
 
       <div id="pairing-answer" class="pairing-step hidden">
+        <button class="btn-back" data-home>&larr; Start Over</button>
         <p class="step-label">2 / 2 — share this code back to the other device</p>
         <textarea id="answer-code" class="code-area" readonly></textarea>
         <button id="btn-copy-answer" class="btn btn-primary">Copy Code</button>

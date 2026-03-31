@@ -10,12 +10,17 @@ export async function compress(sdpString) {
   const fields = extractSDP(sdpString);
   const packed = packSDP(fields);
   const compressed = await deflate(packed);
-  return bytesToWords(compressed);
+
+  // Use whichever is shorter; high bit in header word indicates deflate
+  if (compressed.length < packed.length) {
+    return bytesToWords(compressed, true);
+  }
+  return bytesToWords(packed, false);
 }
 
 export async function decompress(wordString) {
-  const compressed = wordsToBytes(wordString);
-  const packed = await inflate(compressed);
+  const { bytes, deflated } = wordsToBytes(wordString);
+  const packed = deflated ? await inflate(bytes) : bytes;
   const fields = unpackSDP(packed);
   return reconstructSDP(fields);
 }
@@ -39,7 +44,7 @@ function extractSDP(sdp) {
       fields.setup = val === 'actpass' ? 0 : val === 'active' ? 1 : 2;
     } else if (line.startsWith('a=candidate:')) {
       const c = parseCandidate(line);
-      if (c && c.type === 'host') fields.candidates.push(c);
+      if (c && (c.type === 'host' || c.type === 'srflx')) fields.candidates.push(c);
     }
   }
 
@@ -190,12 +195,13 @@ async function readAllBytes(readable) {
 
 // --- Word Encoding (12 bits per word) ---
 
-function bytesToWords(bytes) {
+// First word header: bit 11 = deflate flag, bits 0-10 = byte count (max 2047)
+function bytesToWords(bytes, deflated) {
   let bits = '';
   for (const b of bytes) bits += b.toString(2).padStart(8, '0');
 
-  // First word encodes byte count
-  const words = [WORDLIST[bytes.length]];
+  const header = (deflated ? 0x800 : 0) | (bytes.length & 0x7FF);
+  const words = [WORDLIST[header]];
 
   for (let i = 0; i < bits.length; i += BITS_PER_WORD) {
     const chunk = bits.slice(i, i + BITS_PER_WORD).padEnd(BITS_PER_WORD, '0');
@@ -209,8 +215,11 @@ function wordsToBytes(wordString) {
   const words = wordString.trim().toLowerCase().split(/\s+/);
   if (words.length < 2) throw new Error('Invalid code: too few words');
 
-  const totalBytes = WORD_INDEX.get(words[0]);
-  if (totalBytes === undefined) throw new Error(`Unknown word: "${words[0]}"`);
+  const headerIdx = WORD_INDEX.get(words[0]);
+  if (headerIdx === undefined) throw new Error(`Unknown word: "${words[0]}"`);
+
+  const deflated = !!(headerIdx & 0x800);
+  const totalBytes = headerIdx & 0x7FF;
 
   let bits = '';
   for (let i = 1; i < words.length; i++) {
@@ -224,5 +233,5 @@ function wordsToBytes(wordString) {
     result[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
   }
 
-  return result;
+  return { bytes: result, deflated };
 }
