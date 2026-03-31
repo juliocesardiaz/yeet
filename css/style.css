@@ -154,7 +154,7 @@ h1 {
   color: var(--fg);
   border: 1px solid var(--border);
   resize: vertical;
-  word-break: break-all;
+  word-break: break-word;
 }
 
 .code-area:focus {
