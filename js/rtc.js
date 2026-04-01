@@ -1,3 +1,5 @@
+import { replaceCredentials } from './signaling.js';
+
 export class RTCManager {
   constructor() {
     this.pc = null;
@@ -7,7 +9,9 @@ export class RTCManager {
   }
 
   _createPC() {
-    this.pc = new RTCPeerConnection({ iceServers: [] });
+    this.pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    });
 
     this.pc.onconnectionstatechange = () => {
       const state = this.pc.connectionState;
@@ -37,8 +41,12 @@ export class RTCManager {
         resolve();
         return;
       }
+      const timeout = setTimeout(() => resolve(), 10000);
       this.pc.onicegatheringstatechange = () => {
-        if (this.pc.iceGatheringState === 'complete') resolve();
+        if (this.pc.iceGatheringState === 'complete') {
+          clearTimeout(timeout);
+          resolve();
+        }
       };
     });
   }
@@ -50,6 +58,7 @@ export class RTCManager {
     this._setupDataChannel(dc);
 
     const offer = await this.pc.createOffer();
+    offer.sdp = await replaceCredentials(offer.sdp);
     await this.pc.setLocalDescription(offer);
     await this._waitForICE();
 
@@ -65,6 +74,7 @@ export class RTCManager {
 
     await this.pc.setRemoteDescription({ type: 'offer', sdp });
     const answer = await this.pc.createAnswer();
+    answer.sdp = await replaceCredentials(answer.sdp);
     await this.pc.setLocalDescription(answer);
     await this._waitForICE();
 
