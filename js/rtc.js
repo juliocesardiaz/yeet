@@ -1,3 +1,5 @@
+import { replaceCredentials } from './signaling.js';
+
 export class RTCManager {
   constructor() {
     this.pc = null;
@@ -56,6 +58,7 @@ export class RTCManager {
     this._setupDataChannel(dc);
 
     const offer = await this.pc.createOffer();
+    offer.sdp = await replaceCredentials(offer.sdp);
     await this.pc.setLocalDescription(offer);
     await this._waitForICE();
 
@@ -71,6 +74,7 @@ export class RTCManager {
 
     await this.pc.setRemoteDescription({ type: 'offer', sdp });
     const answer = await this.pc.createAnswer();
+    answer.sdp = await replaceCredentials(answer.sdp);
     await this.pc.setLocalDescription(answer);
     await this._waitForICE();
 

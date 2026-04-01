@@ -25,18 +25,47 @@ export async function decompress(wordString) {
   return reconstructSDP(fields);
 }
 
+// Derive ICE credentials deterministically from DTLS fingerprint.
+// Both peers derive the same ufrag/pwd from the fingerprint, so we
+// don't need to transmit them — saving ~28 bytes per code.
+export async function deriveCredentials(fingerprintBytes) {
+  const prefix = new Uint8Array([0x59, 0x45, 0x45, 0x54]); // "YEET"
+  const input = new Uint8Array(prefix.length + fingerprintBytes.length);
+  input.set(prefix);
+  input.set(fingerprintBytes, prefix.length);
+
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', input));
+  const hex = Array.from(hash, b => b.toString(16).padStart(2, '0')).join('');
+
+  return {
+    ufrag: hex.slice(0, 8),  // 8 hex chars (≥4 required by ICE)
+    pwd: hex.slice(8, 32),   // 24 hex chars (≥22 required by ICE)
+  };
+}
+
+// Replace ICE credentials in an SDP string with derived ones.
+// Call this before setLocalDescription so the browser's ICE agent
+// uses the deterministic credentials.
+export async function replaceCredentials(sdp) {
+  const fpMatch = sdp.match(/a=fingerprint:sha-256 ([0-9A-Fa-f:]+)/);
+  if (!fpMatch) return sdp;
+
+  const fpBytes = new Uint8Array(fpMatch[1].split(':').map(h => parseInt(h, 16)));
+  const { ufrag, pwd } = await deriveCredentials(fpBytes);
+
+  return sdp
+    .replace(/a=ice-ufrag:.*/, 'a=ice-ufrag:' + ufrag)
+    .replace(/a=ice-pwd:.*/, 'a=ice-pwd:' + pwd);
+}
+
 // --- SDP Extraction ---
 
 function extractSDP(sdp) {
   const lines = sdp.split(/\r?\n/);
-  const fields = { ufrag: '', pwd: '', fingerprintBytes: null, setup: 0, candidates: [] };
+  const fields = { fingerprintBytes: null, setup: 0, candidates: [] };
 
   for (const line of lines) {
-    if (line.startsWith('a=ice-ufrag:')) {
-      fields.ufrag = line.slice(12);
-    } else if (line.startsWith('a=ice-pwd:')) {
-      fields.pwd = line.slice(10);
-    } else if (line.startsWith('a=fingerprint:sha-256 ')) {
+    if (line.startsWith('a=fingerprint:sha-256 ')) {
       const hex = line.slice(21);
       fields.fingerprintBytes = new Uint8Array(hex.split(':').map(h => parseInt(h, 16)));
     } else if (line.startsWith('a=setup:')) {
@@ -48,7 +77,7 @@ function extractSDP(sdp) {
     }
   }
 
-  // Keep only first host candidate
+  // Keep only first candidate
   if (fields.candidates.length > 1) fields.candidates = [fields.candidates[0]];
 
   return fields;
@@ -66,9 +95,10 @@ function parseCandidate(line) {
 
 // --- SDP Reconstruction ---
 
-function reconstructSDP(fields) {
+async function reconstructSDP(fields) {
   const fpHex = Array.from(fields.fingerprintBytes, b => b.toString(16).toUpperCase().padStart(2, '0')).join(':');
   const setupStr = ['actpass', 'active', 'passive'][fields.setup] || 'actpass';
+  const { ufrag, pwd } = await deriveCredentials(fields.fingerprintBytes);
 
   const lines = [
     'v=0',
@@ -85,8 +115,8 @@ function reconstructSDP(fields) {
     lines.push(`a=candidate:1 1 UDP 2113937151 ${c.ip} ${c.port} typ host`);
   }
 
-  lines.push('a=ice-ufrag:' + fields.ufrag);
-  lines.push('a=ice-pwd:' + fields.pwd);
+  lines.push('a=ice-ufrag:' + ufrag);
+  lines.push('a=ice-pwd:' + pwd);
   lines.push('a=fingerprint:sha-256 ' + fpHex);
   lines.push('a=setup:' + setupStr);
   lines.push('a=mid:0');
@@ -97,32 +127,22 @@ function reconstructSDP(fields) {
 }
 
 // --- Binary Packing ---
-// Format:
+// Format (ICE credentials derived from fingerprint, not transmitted):
 //   [0]       flags: setup(2 bits) + candidateCount(2 bits) + reserved(4 bits)
-//   [1]       ufrag length (N)
-//   [2..1+N]  ufrag bytes
-//   [2+N]     pwd length (M)
-//   [3+N..2+N+M]  pwd bytes
-//   [next 32] fingerprint raw bytes (SHA-256)
+//   [1..32]   fingerprint raw bytes (SHA-256)
 //   per candidate: [4 bytes IPv4] [2 bytes port BE]
 
 function packSDP(fields) {
-  const ufragBytes = new TextEncoder().encode(fields.ufrag);
-  const pwdBytes = new TextEncoder().encode(fields.pwd);
   const fp = fields.fingerprintBytes || new Uint8Array(32);
   const candidateCount = Math.min(fields.candidates.length, 3);
 
   const flags = ((fields.setup & 0x3) << 6) | ((candidateCount & 0x3) << 4);
 
-  const totalSize = 1 + 1 + ufragBytes.length + 1 + pwdBytes.length + 32 + (candidateCount * 6);
+  const totalSize = 1 + 32 + (candidateCount * 6);
   const buf = new Uint8Array(totalSize);
   let i = 0;
 
   buf[i++] = flags;
-  buf[i++] = ufragBytes.length;
-  buf.set(ufragBytes, i); i += ufragBytes.length;
-  buf[i++] = pwdBytes.length;
-  buf.set(pwdBytes, i); i += pwdBytes.length;
   buf.set(fp, i); i += 32;
 
   for (let c = 0; c < candidateCount; c++) {
@@ -142,12 +162,6 @@ function unpackSDP(bytes) {
   const setup = (flags >> 6) & 0x3;
   const candidateCount = (flags >> 4) & 0x3;
 
-  const ufragLen = bytes[i++];
-  const ufrag = new TextDecoder().decode(bytes.slice(i, i + ufragLen)); i += ufragLen;
-
-  const pwdLen = bytes[i++];
-  const pwd = new TextDecoder().decode(bytes.slice(i, i + pwdLen)); i += pwdLen;
-
   const fingerprintBytes = bytes.slice(i, i + 32); i += 32;
 
   const candidates = [];
@@ -157,7 +171,7 @@ function unpackSDP(bytes) {
     candidates.push({ ip, port, type: 'host' });
   }
 
-  return { ufrag, pwd, fingerprintBytes, setup, candidates };
+  return { fingerprintBytes, setup, candidates };
 }
 
 // --- Deflate / Inflate (native CompressionStream) ---
