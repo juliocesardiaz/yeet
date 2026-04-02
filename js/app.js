@@ -6,7 +6,7 @@ import { $, showView, setStatus, addMessage, generateName, copyToClipboard } fro
 let rtc = null;
 let myName = '';
 let peerName = '';
-
+let aborted = false;
 function init() {
   myName = generateName();
   $('#my-name').textContent = myName;
@@ -51,6 +51,7 @@ function init() {
 }
 
 async function startCreate() {
+  aborted = false;
   setStatus('generating offer...', 'connecting');
   hideAllSteps();
 
@@ -59,14 +60,16 @@ async function startCreate() {
 
   try {
     const sdp = await rtc.createOffer();
+    if (aborted) return;
     const code = await compress(sdp);
+    if (aborted) return;
 
     $('#offer-code').value = code;
     $('#pairing-offer').classList.remove('hidden');
     const wordCount = code.split(/\s+/).length;
     setStatus(`${wordCount} words — copy and share`, '');
   } catch (err) {
-    setStatus('error: ' + err.message, 'error');
+    if (!aborted) setStatus('error: ' + err.message, 'error');
   }
 }
 
@@ -80,6 +83,7 @@ async function submitOffer() {
   const code = $('#offer-input').value.trim();
   if (!code) return;
 
+  aborted = false;
   setStatus('processing offer...', 'connecting');
 
   rtc = new RTCManager();
@@ -87,8 +91,11 @@ async function submitOffer() {
 
   try {
     const offerSDP = await decompress(code);
+    if (aborted) return;
     const answerSDP = await rtc.acceptOffer(offerSDP);
+    if (aborted) return;
     const answerCode = await compress(answerSDP);
+    if (aborted) return;
 
     $('#pairing-join').classList.add('hidden');
     $('#answer-code').value = answerCode;
@@ -96,7 +103,7 @@ async function submitOffer() {
     const wordCount = answerCode.split(/\s+/).length;
     setStatus(`${wordCount} words — copy and share back`, '');
   } catch (err) {
-    setStatus('error: ' + err.message, 'error');
+    if (!aborted) setStatus('error: ' + err.message, 'error');
   }
 }
 
@@ -104,13 +111,15 @@ async function submitAnswer() {
   const code = $('#answer-input').value.trim();
   if (!code) return;
 
+  aborted = false;
   setStatus('connecting...', 'connecting');
 
   try {
     const answerSDP = await decompress(code);
+    if (aborted) return;
     await rtc.acceptAnswer(answerSDP);
   } catch (err) {
-    setStatus('error: ' + err.message, 'error');
+    if (!aborted) setStatus('error: ' + err.message, 'error');
   }
 }
 
@@ -149,6 +158,7 @@ function sendMessage() {
 }
 
 function goHome() {
+  aborted = true;
   if (rtc) {
     rtc.disconnect();
     rtc = null;
