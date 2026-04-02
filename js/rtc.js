@@ -58,8 +58,7 @@ export class RTCManager {
     this._setupDataChannel(dc);
 
     const offer = await this.pc.createOffer();
-    offer.sdp = await replaceCredentials(offer.sdp);
-    await this.pc.setLocalDescription(offer);
+    await this.pc.setLocalDescription({ type: offer.type, sdp: await replaceCredentials(offer.sdp) });
     await this._waitForICE();
 
     return this.pc.localDescription.sdp;
@@ -74,8 +73,7 @@ export class RTCManager {
 
     await this.pc.setRemoteDescription({ type: 'offer', sdp });
     const answer = await this.pc.createAnswer();
-    answer.sdp = await replaceCredentials(answer.sdp);
-    await this.pc.setLocalDescription(answer);
+    await this.pc.setLocalDescription({ type: answer.type, sdp: await replaceCredentials(answer.sdp) });
     await this._waitForICE();
 
     return this.pc.localDescription.sdp;
