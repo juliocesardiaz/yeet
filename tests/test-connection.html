@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>YEET — Connection Tests</title>
+  <style>
+    body { font-family: monospace; background: #0a0a0a; color: #e0e0e0; padding: 2rem; }
+    .pass { color: #39ff14; }
+    .fail { color: #ff4444; }
+    .info { color: #ffb300; }
+    pre { margin: 0; padding: 0.25rem 0; }
+    h2 { margin-top: 1.5rem; color: #ffb300; }
+  </style>
+</head>
+<body>
+  <h1>YEET Connection Tests</h1>
+  <div id="log"></div>
+
+  <script type="module">
+    import { RTCManager } from '../js/rtc.js';
+    import { compress, decompress } from '../js/signaling.js';
+    import { MSG, encode, decode } from '../js/protocol.js';
+
+    const log = document.getElementById('log');
+    let passed = 0, failed = 0;
+
+    function print(text, cls = '') {
+      const el = document.createElement('pre');
+      el.textContent = text;
+      if (cls) el.className = cls;
+      log.appendChild(el);
+    }
+
+    function section(name) {
+      const h = document.createElement('h2');
+      h.textContent = name;
+      log.appendChild(h);
+    }
+
+    function ok(name) {
+      passed++;
+      print(`  PASS  ${name}`, 'pass');
+    }
+
+    function fail(name, err) {
+      failed++;
+      print(`  FAIL  ${name}: ${err}`, 'fail');
+    }
+
+    function assert(cond, name, detail = '') {
+      if (cond) ok(name);
+      else fail(name, detail || 'assertion failed');
+    }
+
+    // Wait for a condition with timeout
+    function waitFor(fn, timeout = 10000) {
+      return new Promise((resolve, reject) => {
+        const start = Date.now();
+        const check = () => {
+          const result = fn();
+          if (result) return resolve(result);
+          if (Date.now() - start > timeout) return reject(new Error('timeout'));
+          setTimeout(check, 50);
+        };
+        check();
+      });
+    }
+
+    async function run() {
+      print('Starting tests...\n', 'info');
+
+      // --- Test 1: Full pairing flow via compress/decompress ---
+      section('Pairing flow (compress → decompress)');
+
+      try {
+        const peer1 = new RTCManager();
+        const offerSDP = await peer1.createOffer();
+        assert(offerSDP.includes('a=fingerprint:sha-256'), 'offer contains fingerprint');
+        assert(offerSDP.includes('a=candidate:'), 'offer contains candidate');
+
+        const offerWords = await compress(offerSDP);
+        const wordCount = offerWords.split(/\s+/).length;
+        print(`    offer word count: ${wordCount}`, 'info');
+        assert(wordCount <= 30, `offer is ≤ 30 words (got ${wordCount})`);
+
+        const offerRestored = await decompress(offerWords);
+        assert(offerRestored.includes('a=fingerprint:sha-256'), 'decompressed offer has fingerprint');
+        assert(offerRestored.includes('a=candidate:'), 'decompressed offer has candidate');
+        assert(offerRestored.includes('m=application 9'), 'decompressed offer has media line');
+
+        peer1.disconnect();
+        ok('full offer compress/decompress cycle');
+      } catch (err) {
+        fail('pairing flow', err.message);
+      }
+
+      // --- Test 2: Two peers connect via word codes ---
+      section('End-to-end connection via word codes');
+
+      try {
+        const initiator = new RTCManager();
+        const joiner = new RTCManager();
+
+        // Track connection states
+        let initiatorState = 'new';
+        let joinerState = 'new';
+
+        initiator.onStateChange = (s) => { initiatorState = s; };
+        joiner.onStateChange = (s) => { joinerState = s; };
+
+        // Step 1: Initiator creates offer, compress to words
+        const offerSDP = await initiator.createOffer();
+        const offerWords = await compress(offerSDP);
+        print(`    offer: ${offerWords.split(/\s+/).length} words`, 'info');
+
+        // Step 2: Joiner decompresses offer, creates answer, compress to words
+        const decompressedOffer = await decompress(offerWords);
+        const answerSDP = await joiner.acceptOffer(decompressedOffer);
+        const answerWords = await compress(answerSDP);
+        print(`    answer: ${answerWords.split(/\s+/).length} words`, 'info');
+
+        // Step 3: Initiator decompresses answer, accepts it
+        const decompressedAnswer = await decompress(answerWords);
+        await initiator.acceptAnswer(decompressedAnswer);
+
+        // Step 4: Wait for both sides to connect
+        await waitFor(() => initiatorState === 'connected' && joinerState === 'connected');
+        ok('both peers reached connected state');
+
+        // Step 5: Exchange messages
+        let receivedByJoiner = null;
+        let receivedByInitiator = null;
+
+        joiner.onMessage = (data) => { receivedByJoiner = decode(data); };
+        initiator.onMessage = (data) => { receivedByInitiator = decode(data); };
+
+        // Initiator sends HELLO
+        initiator.send(encode(MSG.HELLO, { name: 'Onyx' }));
+        await waitFor(() => receivedByJoiner !== null);
+        assert(receivedByJoiner.t === MSG.HELLO, 'joiner received HELLO');
+        assert(receivedByJoiner.name === 'Onyx', 'HELLO payload correct');
+
+        // Joiner sends CLIPBOARD
+        joiner.send(encode(MSG.CLIPBOARD, { content: 'test message 123' }));
+        await waitFor(() => receivedByInitiator !== null);
+        assert(receivedByInitiator.t === MSG.CLIPBOARD, 'initiator received CLIPBOARD');
+        assert(receivedByInitiator.content === 'test message 123', 'CLIPBOARD payload correct');
+
+        // Reset and test larger message
+        receivedByJoiner = null;
+        const bigContent = 'A'.repeat(10000);
+        initiator.send(encode(MSG.CLIPBOARD, { content: bigContent }));
+        await waitFor(() => receivedByJoiner !== null);
+        assert(receivedByJoiner.content === bigContent, 'large message (10KB) delivered intact');
+
+        // Test unicode
+        receivedByInitiator = null;
+        joiner.send(encode(MSG.CLIPBOARD, { content: '🚀 emoji test 世界' }));
+        await waitFor(() => receivedByInitiator !== null);
+        assert(receivedByInitiator.content === '🚀 emoji test 世界', 'unicode message delivered');
+
+        // Clean disconnect
+        initiator.send(encode(MSG.DISCONNECT));
+        initiator.disconnect();
+        joiner.disconnect();
+        ok('clean disconnect');
+
+      } catch (err) {
+        fail('end-to-end connection', err.message);
+      }
+
+      // --- Test 3: Disconnect detection ---
+      section('Disconnect detection');
+
+      try {
+        const peer1 = new RTCManager();
+        const peer2 = new RTCManager();
+
+        let peer2State = 'new';
+        peer2.onStateChange = (s) => { peer2State = s; };
+
+        const offerSDP = await peer1.createOffer();
+        const offerWords = await compress(offerSDP);
+        const answerSDP = await peer2.acceptOffer(await decompress(offerWords));
+        const answerWords = await compress(answerSDP);
+        await peer1.acceptAnswer(await decompress(answerWords));
+
+        await waitFor(() => peer2State === 'connected');
+        ok('peers connected');
+
+        // Close peer1, peer2 should detect disconnect
+        peer1.disconnect();
+        await waitFor(() => peer2State === 'disconnected' || peer2State === 'failed', 15000);
+        assert(
+          peer2State === 'disconnected' || peer2State === 'failed',
+          `peer2 detected disconnect (state: ${peer2State})`
+        );
+
+        peer2.disconnect();
+      } catch (err) {
+        fail('disconnect detection', err.message);
+      }
+
+      // --- Summary ---
+      section('Summary');
+      print(`\n${passed + failed} tests, ${passed} passed, ${failed} failed`, failed ? 'fail' : 'pass');
+      document.title = failed ? `FAIL (${failed}) — YEET Tests` : `PASS (${passed}) — YEET Tests`;
+    }
+
+    run();
+  </script>
+</body>
+</html>
