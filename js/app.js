@@ -7,6 +7,8 @@ let rtc = null;
 let myName = '';
 let peerName = '';
 let aborted = false;
+let busy = false;
+
 function init() {
   myName = generateName();
   $('#my-name').textContent = myName;
@@ -51,6 +53,8 @@ function init() {
 }
 
 async function startCreate() {
+  if (busy) return;
+  busy = true;
   aborted = false;
   setStatus('generating offer...', 'connecting');
   hideAllSteps();
@@ -70,6 +74,8 @@ async function startCreate() {
     setStatus(`${wordCount} words — copy and share`, '');
   } catch (err) {
     if (!aborted) setStatus('error: ' + err.message, 'error');
+  } finally {
+    busy = false;
   }
 }
 
@@ -81,8 +87,9 @@ function startJoin() {
 
 async function submitOffer() {
   const code = $('#offer-input').value.trim();
-  if (!code) return;
+  if (!code || busy) return;
 
+  busy = true;
   aborted = false;
   setStatus('processing offer...', 'connecting');
 
@@ -104,13 +111,16 @@ async function submitOffer() {
     setStatus(`${wordCount} words — copy and share back`, '');
   } catch (err) {
     if (!aborted) setStatus('error: ' + err.message, 'error');
+  } finally {
+    busy = false;
   }
 }
 
 async function submitAnswer() {
   const code = $('#answer-input').value.trim();
-  if (!code) return;
+  if (!code || busy) return;
 
+  busy = true;
   aborted = false;
   setStatus('connecting...', 'connecting');
 
@@ -120,6 +130,8 @@ async function submitAnswer() {
     await rtc.acceptAnswer(answerSDP);
   } catch (err) {
     if (!aborted) setStatus('error: ' + err.message, 'error');
+  } finally {
+    busy = false;
   }
 }
 
@@ -137,6 +149,7 @@ function wireRTC() {
   };
 
   rtc.onStateChange = (state) => {
+    if (aborted) return;
     if (state === 'connected') {
       rtc.send(encode(MSG.HELLO, { name: myName }));
       showView('view-connected');
@@ -159,6 +172,7 @@ function sendMessage() {
 
 function goHome() {
   aborted = true;
+  busy = false;
   if (rtc) {
     rtc.disconnect();
     rtc = null;
