@@ -54,8 +54,8 @@ export async function replaceCredentials(sdp) {
   const { ufrag, pwd } = await deriveCredentials(fpBytes);
 
   return sdp
-    .replace(/a=ice-ufrag:.*/, 'a=ice-ufrag:' + ufrag)
-    .replace(/a=ice-pwd:.*/, 'a=ice-pwd:' + pwd);
+    .replace(/a=ice-ufrag:.*/g, 'a=ice-ufrag:' + ufrag)
+    .replace(/a=ice-pwd:.*/g, 'a=ice-pwd:' + pwd);
 }
 
 // --- SDP Extraction ---
