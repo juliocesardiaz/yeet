@@ -246,12 +246,6 @@ describe('protocol', () => {
     assert.equal(decoded.content, 'hello world');
   });
 
-  it('encode/decode DISCONNECT', () => {
-    const msg = encode(MSG.DISCONNECT);
-    const decoded = decode(msg);
-    assert.equal(decoded.t, MSG.DISCONNECT);
-  });
-
   it('handles unicode content', () => {
     const msg = encode(MSG.CLIPBOARD, { content: '🚀 hello 世界' });
     const decoded = decode(msg);
@@ -279,5 +273,118 @@ describe('edge cases', () => {
     const upper = words.toUpperCase();
     const restored = await decompress(upper);
     assert.ok(restored.includes('a=fingerprint:sha-256'));
+  });
+});
+
+// --- Candidate filtering tests ---
+
+describe('candidate filtering', () => {
+  it('drops IPv6 host candidates instead of corrupting them', async () => {
+    const v6 = SAMPLE_SDP.replace(
+      'a=candidate:1 1 UDP 2113937151 192.168.1.42 54321 typ host',
+      'a=candidate:1 1 UDP 2113937151 fe80::1 54321 typ host'
+    );
+    const words = await compress(v6);
+    const restored = await decompress(words);
+    assert.ok(!restored.includes('a=candidate:'), 'IPv6 candidate should be dropped, not packed');
+    assert.ok(!restored.includes('fe80'), 'IPv6 address must not survive the codec');
+  });
+
+  it('drops hostname (mDNS) candidates', async () => {
+    const mdns = SAMPLE_SDP.replace(
+      '192.168.1.42',
+      'abcd-ef01-2345.local'
+    );
+    const words = await compress(mdns);
+    const restored = await decompress(words);
+    assert.ok(!restored.includes('a=candidate:'));
+  });
+
+  it('drops candidates with out-of-range octets', async () => {
+    const bad = SAMPLE_SDP.replace('192.168.1.42', '300.168.1.42');
+    const words = await compress(bad);
+    const restored = await decompress(words);
+    assert.ok(!restored.includes('a=candidate:'));
+  });
+
+  it('keeps IPv4 alongside a dropped IPv6 candidate', async () => {
+    const mixed = SAMPLE_SDP.replace(
+      'a=candidate:1 1 UDP 2113937151 192.168.1.42 54321 typ host',
+      'a=candidate:1 1 UDP 2113937151 fe80::1 54321 typ host\r\n' +
+      'a=candidate:2 1 UDP 2113937150 10.0.0.5 5555 typ host'
+    );
+    const words = await compress(mixed);
+    const restored = await decompress(words);
+    assert.ok(restored.includes('10.0.0.5'));
+    assert.ok(restored.includes('5555'));
+  });
+});
+
+// --- Fingerprint algorithm guard ---
+
+describe('fingerprint algorithm', () => {
+  it('rejects non-sha-256 fingerprints rather than truncating', async () => {
+    const sha384 = SAMPLE_SDP.replace('a=fingerprint:sha-256', 'a=fingerprint:sha-384');
+    await assert.rejects(() => compress(sha384), /unsupported fingerprint algorithm/);
+  });
+
+  it('replaceCredentials handles any algorithm string', async () => {
+    // replaceCredentials shouldn't care about the algo — it only needs the bytes.
+    const sha384 = SAMPLE_SDP.replace('a=fingerprint:sha-256', 'a=fingerprint:sha-384');
+    const result = await replaceCredentials(sha384);
+    assert.ok(!result.includes('a=ice-ufrag:abcd1234'));
+    assert.ok(result.includes('a=ice-ufrag:'));
+  });
+});
+
+// --- Deflate-path coverage ---
+
+describe('deflate path', () => {
+  // Build an SDP whose packed form (after header + 32-byte fp + 6-byte candidate)
+  // has enough redundancy that deflate actually wins. A repeated-byte fingerprint
+  // is the easiest way to force that.
+  function sdpWithRepeatingFp() {
+    const byte = 'AA';
+    const fp = Array(32).fill(byte).join(':');
+    return SAMPLE_SDP.replace(
+      /a=fingerprint:sha-256 [0-9A-F:]+/,
+      'a=fingerprint:sha-256 ' + fp
+    );
+  }
+
+  it('selects the deflate encoding when it is shorter', async () => {
+    const words = await compress(sdpWithRepeatingFp());
+    // Header word (index 0) has bit 11 set when deflate path is used.
+    const firstWord = words.split(/\s+/)[0];
+    const headerIdx = WORDLIST.indexOf(firstWord);
+    assert.ok(headerIdx >= 0, 'header word must be in wordlist');
+    assert.ok(headerIdx & 0x800, 'deflate flag bit must be set on a redundant payload');
+  });
+
+  it('deflate-encoded payload still roundtrips', async () => {
+    const sdp = sdpWithRepeatingFp();
+    const words = await compress(sdp);
+    const restored = await decompress(words);
+    assert.ok(restored.includes('a=fingerprint:sha-256 AA:AA:AA'));
+    assert.ok(restored.includes('192.168.1.42'));
+  });
+
+  it('raw path used when deflate would be larger', async () => {
+    // 32 distinct bytes — deflate-raw overhead exceeds any savings, so the
+    // codec must pick the raw path.
+    const fp = Array.from({ length: 32 }, (_, i) => (i * 17 + 3).toString(16).padStart(2, '0').toUpperCase().slice(-2));
+    // Disambiguate by salting every byte through a rough pseudo-random function.
+    for (let i = 0; i < 32; i++) {
+      const v = ((i * 2654435761) >>> 0) & 0xFF;
+      fp[i] = v.toString(16).padStart(2, '0').toUpperCase();
+    }
+    const sdp = SAMPLE_SDP.replace(
+      /a=fingerprint:sha-256 [0-9A-F:]+/,
+      'a=fingerprint:sha-256 ' + fp.join(':')
+    );
+    const words = await compress(sdp);
+    const firstWord = words.split(/\s+/)[0];
+    const headerIdx = WORDLIST.indexOf(firstWord);
+    assert.equal(headerIdx & 0x800, 0, 'deflate flag should not be set on incompressible input');
   });
 });

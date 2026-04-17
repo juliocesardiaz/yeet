@@ -143,8 +143,6 @@ function wireRTC() {
       $('#peer-name').textContent = peerName;
     } else if (msg.t === MSG.CLIPBOARD) {
       addMessage(msg.content, 'peer', msg.ts);
-    } else if (msg.t === MSG.DISCONNECT) {
-      doDisconnect();
     }
   };
 
@@ -183,7 +181,6 @@ function goHome() {
 
 function doDisconnect() {
   if (rtc) {
-    rtc.send(encode(MSG.DISCONNECT));
     rtc.disconnect();
     rtc = null;
   }

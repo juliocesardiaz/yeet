@@ -47,7 +47,7 @@ export async function deriveCredentials(fingerprintBytes) {
 // Call this before setLocalDescription so the browser's ICE agent
 // uses the deterministic credentials.
 export async function replaceCredentials(sdp) {
-  const fpMatch = sdp.match(/a=fingerprint:sha-256 ([0-9A-Fa-f:]+)/);
+  const fpMatch = sdp.match(/a=fingerprint:\S+\s+([0-9A-Fa-f:]+)/);
   if (!fpMatch) return sdp;
 
   const fpBytes = new Uint8Array(fpMatch[1].split(':').map(h => parseInt(h, 16)));
@@ -65,9 +65,16 @@ function extractSDP(sdp) {
   const fields = { fingerprintBytes: null, setup: 0, candidates: [] };
 
   for (const line of lines) {
-    if (line.startsWith('a=fingerprint:sha-256 ')) {
-      const hex = line.slice(21);
-      fields.fingerprintBytes = new Uint8Array(hex.split(':').map(h => parseInt(h, 16)));
+    if (line.startsWith('a=fingerprint:')) {
+      const m = /^a=fingerprint:(\S+)\s+([0-9A-Fa-f:]+)/.exec(line);
+      if (!m) continue;
+      if (m[1].toLowerCase() !== 'sha-256') {
+        throw new Error(`unsupported fingerprint algorithm: ${m[1]}`);
+      }
+      fields.fingerprintBytes = new Uint8Array(m[2].split(':').map(h => parseInt(h, 16)));
+      if (fields.fingerprintBytes.length !== 32) {
+        throw new Error('malformed sha-256 fingerprint');
+      }
     } else if (line.startsWith('a=setup:')) {
       const val = line.slice(8);
       fields.setup = val === 'actpass' ? 0 : val === 'active' ? 1 : 2;
@@ -83,14 +90,20 @@ function extractSDP(sdp) {
   return fields;
 }
 
+const IPV4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+
 function parseCandidate(line) {
   const parts = line.slice(12).split(/\s+/);
-  if (parts.length < 8) return null;
-  return {
-    ip: parts[4],
-    port: parseInt(parts[5], 10),
-    type: parts[7],
-  };
+  if (parts.length < 8 || parts[6] !== 'typ') return null;
+  const ip = parts[4];
+  const m = IPV4_RE.exec(ip);
+  if (!m) return null; // IPv6 or hostname — not encodable in 4 bytes
+  for (let i = 1; i <= 4; i++) {
+    if (Number(m[i]) > 255) return null;
+  }
+  const port = parseInt(parts[5], 10);
+  if (!Number.isFinite(port) || port < 0 || port > 65535) return null;
+  return { ip, port, type: parts[7] };
 }
 
 // --- SDP Reconstruction ---
