@@ -160,7 +160,6 @@
         assert(receivedByInitiator.content === '🚀 emoji test 世界', 'unicode message delivered');
 
         // Clean disconnect
-        initiator.send(encode(MSG.DISCONNECT));
         initiator.disconnect();
         joiner.disconnect();
         ok('clean disconnect');
