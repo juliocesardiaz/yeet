@@ -27,7 +27,7 @@ export class RTCManager {
     };
 
     dc.onclose = () => {
-      if (this.onStateChange) this.onStateChange('disconnected');
+      if (this.onStateChange) this.onStateChange('closed');
     };
 
     dc.onmessage = (e) => {
@@ -90,11 +90,19 @@ export class RTCManager {
   }
 
   disconnect() {
+    // Detach callbacks first so late-firing events from close() don't leak
+    // into the next pairing session.
+    this.onMessage = null;
+    this.onStateChange = null;
     if (this.dc) {
+      this.dc.onopen = this.dc.onclose = this.dc.onmessage = null;
       this.dc.close();
       this.dc = null;
     }
     if (this.pc) {
+      this.pc.onconnectionstatechange = null;
+      this.pc.onicegatheringstatechange = null;
+      this.pc.ondatachannel = null;
       this.pc.close();
       this.pc = null;
     }

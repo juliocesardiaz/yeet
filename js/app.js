@@ -8,6 +8,7 @@ let myName = '';
 let peerName = '';
 let aborted = false;
 let busy = false;
+let hasConnected = false;
 
 function init() {
   myName = generateName();
@@ -56,6 +57,7 @@ async function startCreate() {
   if (busy) return;
   busy = true;
   aborted = false;
+  hasConnected = false;
   setStatus('generating offer...', 'connecting');
   hideAllSteps();
 
@@ -91,6 +93,7 @@ async function submitOffer() {
 
   busy = true;
   aborted = false;
+  hasConnected = false;
   setStatus('processing offer...', 'connecting');
 
   rtc = new RTCManager();
@@ -149,10 +152,18 @@ function wireRTC() {
   rtc.onStateChange = (state) => {
     if (aborted) return;
     if (state === 'connected') {
+      hasConnected = true;
       rtc.send(encode(MSG.HELLO, { name: myName }));
       showView('view-connected');
-    } else if (state === 'disconnected' || state === 'failed') {
-      showView('view-disconnected');
+    } else if (state === 'disconnected') {
+      // Transient per WebRTC spec — ICE may recover on its own.
+      return;
+    } else if (state === 'failed' || state === 'closed') {
+      if (hasConnected) {
+        showView('view-disconnected');
+      } else {
+        setStatus('connection failed — codes may have expired, start over', 'error');
+      }
     }
   };
 }
@@ -171,6 +182,7 @@ function sendMessage() {
 function goHome() {
   aborted = true;
   busy = false;
+  hasConnected = false;
   if (rtc) {
     rtc.disconnect();
     rtc = null;
@@ -180,6 +192,7 @@ function goHome() {
 }
 
 function doDisconnect() {
+  hasConnected = false;
   if (rtc) {
     rtc.disconnect();
     rtc = null;
