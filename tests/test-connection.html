@@ -18,8 +18,15 @@
 
   <script type="module">
     import { RTCManager } from '../js/rtc.js';
-    import { compress, decompress } from '../js/signaling.js';
+    import { compress, decompress, generateNonce } from '../js/signaling.js';
+    import { computeSAS } from '../js/sas.js';
     import { MSG, encode, decode } from '../js/protocol.js';
+
+    // The browser smoke test exercises the WebRTC + codec stack end-to-end.
+    // It does not exercise the SAS confirm UI flow (that lives in app.js);
+    // it does verify that both peers compute the same SAS post-DTLS, which
+    // is the property the UI flow ultimately depends on.
+    const TEST_NONCE = new Uint8Array([0x12, 0x34]);
 
     const log = document.getElementById('log');
     let passed = 0, failed = 0;
@@ -78,15 +85,16 @@
         assert(offerSDP.includes('a=fingerprint:sha-256'), 'offer contains fingerprint');
         assert(offerSDP.includes('a=candidate:'), 'offer contains candidate');
 
-        const offerWords = await compress(offerSDP);
+        const offerWords = await compress(offerSDP, TEST_NONCE);
         const wordCount = offerWords.split(/\s+/).length;
         print(`    offer word count: ${wordCount}`, 'info');
         assert(wordCount <= 30, `offer is ≤ 30 words (got ${wordCount})`);
 
-        const offerRestored = await decompress(offerWords);
+        const { sdp: offerRestored, nonce } = await decompress(offerWords);
         assert(offerRestored.includes('a=fingerprint:sha-256'), 'decompressed offer has fingerprint');
         assert(offerRestored.includes('a=candidate:'), 'decompressed offer has candidate');
         assert(offerRestored.includes('m=application 9'), 'decompressed offer has media line');
+        assert(nonce[0] === TEST_NONCE[0] && nonce[1] === TEST_NONCE[1], 'nonce round-trips');
 
         peer1.disconnect();
         ok('full offer compress/decompress cycle');
@@ -108,24 +116,34 @@
         initiator.onStateChange = (s) => { initiatorState = s; };
         joiner.onStateChange = (s) => { joinerState = s; };
 
-        // Step 1: Initiator creates offer, compress to words
+        // Step 1: Initiator creates offer, compress to words (with nonce)
         const offerSDP = await initiator.createOffer();
-        const offerWords = await compress(offerSDP);
+        const sessionNonce = generateNonce();
+        const offerWords = await compress(offerSDP, sessionNonce);
         print(`    offer: ${offerWords.split(/\s+/).length} words`, 'info');
 
         // Step 2: Joiner decompresses offer, creates answer, compress to words
-        const decompressedOffer = await decompress(offerWords);
+        const { sdp: decompressedOffer, nonce: joinerNonce } = await decompress(offerWords);
         const answerSDP = await joiner.acceptOffer(decompressedOffer);
-        const answerWords = await compress(answerSDP);
+        const answerWords = await compress(answerSDP, joinerNonce);
         print(`    answer: ${answerWords.split(/\s+/).length} words`, 'info');
 
         // Step 3: Initiator decompresses answer, accepts it
-        const decompressedAnswer = await decompress(answerWords);
+        const { sdp: decompressedAnswer } = await decompress(answerWords);
         await initiator.acceptAnswer(decompressedAnswer);
 
         // Step 4: Wait for both sides to connect
         await waitFor(() => initiatorState === 'connected' && joinerState === 'connected');
         ok('both peers reached connected state');
+
+        // Step 4b: Both peers must compute the same SAS over the negotiated certs.
+        const fpsI = initiator.getFingerprints();
+        const fpsJ = joiner.getFingerprints();
+        const sasI = await computeSAS(fpsI.local, fpsI.remote, sessionNonce);
+        const sasJ = await computeSAS(fpsJ.local, fpsJ.remote, sessionNonce);
+        print(`    SAS (initiator): ${sasI}`, 'info');
+        print(`    SAS (joiner):    ${sasJ}`, 'info');
+        assert(sasI === sasJ, 'both peers compute matching SAS');
 
         // Step 5: Exchange messages
         let receivedByJoiner = null;
@@ -179,10 +197,12 @@
         peer2.onStateChange = (s) => { peer2State = s; };
 
         const offerSDP = await peer1.createOffer();
-        const offerWords = await compress(offerSDP);
-        const answerSDP = await peer2.acceptOffer(await decompress(offerWords));
-        const answerWords = await compress(answerSDP);
-        await peer1.acceptAnswer(await decompress(answerWords));
+        const offerWords = await compress(offerSDP, generateNonce());
+        const { sdp: offerSdpRestored, nonce: offerNonce } = await decompress(offerWords);
+        const answerSDP = await peer2.acceptOffer(offerSdpRestored);
+        const answerWords = await compress(answerSDP, offerNonce);
+        const { sdp: answerSdpRestored } = await decompress(answerWords);
+        await peer1.acceptAnswer(answerSdpRestored);
 
         await waitFor(() => peer2State === 'connected');
         ok('peers connected');

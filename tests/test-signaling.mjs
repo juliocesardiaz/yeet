@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { compress, decompress, deriveCredentials, replaceCredentials } from '../js/signaling.js';
+import { compress, decompress, deriveCredentials, replaceCredentials, generateNonce, PROTOCOL_VERSION, UnknownVersionError } from '../js/signaling.js';
 import { WORDLIST } from '../js/wordlist.js';
 import { MSG, encode, decode } from '../js/protocol.js';
 
@@ -130,10 +130,14 @@ describe('replaceCredentials', () => {
 
 // --- Compress/decompress roundtrip tests ---
 
+// Fixed nonce for the roundtrip suite — random nonce would make tests
+// non-deterministic. Production callers use generateNonce().
+const TEST_NONCE = new Uint8Array([0x12, 0x34]);
+
 describe('compress / decompress roundtrip', () => {
   it('roundtrips a sample offer SDP', async () => {
-    const words = await compress(SAMPLE_SDP);
-    const restored = await decompress(words);
+    const words = await compress(SAMPLE_SDP, TEST_NONCE);
+    const { sdp: restored, nonce } = await decompress(words);
 
     // The restored SDP won't be identical (minimal reconstruction),
     // but must preserve the critical fields
@@ -142,11 +146,12 @@ describe('compress / decompress roundtrip', () => {
     assert.ok(restored.includes('192.168.1.42'));
     assert.ok(restored.includes('54321'));
     assert.ok(restored.includes('m=application 9 UDP/DTLS/SCTP webrtc-datachannel'));
+    assert.deepEqual(Array.from(nonce), Array.from(TEST_NONCE));
   });
 
   it('roundtrips an answer SDP with active setup', async () => {
-    const words = await compress(SAMPLE_ANSWER_SDP);
-    const restored = await decompress(words);
+    const words = await compress(SAMPLE_ANSWER_SDP, TEST_NONCE);
+    const { sdp: restored } = await decompress(words);
 
     assert.ok(restored.includes('a=setup:active'));
     assert.ok(restored.includes('192.168.1.100'));
@@ -154,7 +159,7 @@ describe('compress / decompress roundtrip', () => {
   });
 
   it('produces only valid words from the wordlist', async () => {
-    const words = await compress(SAMPLE_SDP);
+    const words = await compress(SAMPLE_SDP, TEST_NONCE);
     const wordSet = new Set(WORDLIST);
     for (const w of words.split(/\s+/)) {
       assert.ok(wordSet.has(w), `"${w}" not in wordlist`);
@@ -162,14 +167,14 @@ describe('compress / decompress roundtrip', () => {
   });
 
   it('produces ≤ 30 words per code', async () => {
-    const words = await compress(SAMPLE_SDP);
+    const words = await compress(SAMPLE_SDP, TEST_NONCE);
     const count = words.split(/\s+/).length;
     assert.ok(count <= 30, `Expected ≤ 30 words, got ${count}`);
   });
 
   it('reconstructed SDP has derived ICE credentials', async () => {
-    const words = await compress(SAMPLE_SDP);
-    const restored = await decompress(words);
+    const words = await compress(SAMPLE_SDP, TEST_NONCE);
+    const { sdp: restored } = await decompress(words);
 
     // Credentials should be derived, not the original ones
     assert.ok(!restored.includes('abcd1234'), 'original ufrag leaked through');
@@ -179,8 +184,8 @@ describe('compress / decompress roundtrip', () => {
   });
 
   it('preserves fingerprint bytes exactly', async () => {
-    const words = await compress(SAMPLE_SDP);
-    const restored = await decompress(words);
+    const words = await compress(SAMPLE_SDP, TEST_NONCE);
+    const { sdp: restored } = await decompress(words);
 
     const fpLine = restored.split('\r\n').find(l => l.startsWith('a=fingerprint:'));
     assert.ok(fpLine);
@@ -189,8 +194,8 @@ describe('compress / decompress roundtrip', () => {
 
   it('handles SDP with no candidates', async () => {
     const noCandidate = SAMPLE_SDP.replace(/a=candidate:.*\r\n/, '');
-    const words = await compress(noCandidate);
-    const restored = await decompress(words);
+    const words = await compress(noCandidate, TEST_NONCE);
+    const { sdp: restored } = await decompress(words);
 
     assert.ok(!restored.includes('a=candidate:'));
     assert.ok(restored.includes('a=fingerprint:sha-256'));
@@ -198,15 +203,15 @@ describe('compress / decompress roundtrip', () => {
 
   it('handles passive setup', async () => {
     const passive = SAMPLE_SDP.replace('a=setup:actpass', 'a=setup:passive');
-    const words = await compress(passive);
-    const restored = await decompress(words);
+    const words = await compress(passive, TEST_NONCE);
+    const { sdp: restored } = await decompress(words);
     assert.ok(restored.includes('a=setup:passive'));
   });
 
   it('handles srflx candidates', async () => {
     const sdpWithSrflx = SAMPLE_SDP.replace('typ host', 'typ srflx');
-    const words = await compress(sdpWithSrflx);
-    const restored = await decompress(words);
+    const words = await compress(sdpWithSrflx, TEST_NONCE);
+    const { sdp: restored } = await decompress(words);
     // srflx candidates are accepted but reconstructed as host type
     assert.ok(restored.includes('192.168.1.42'));
     assert.ok(restored.includes('54321'));
@@ -218,11 +223,55 @@ describe('compress / decompress roundtrip', () => {
       'a=candidate:1 1 UDP 2113937151 192.168.1.42 54321 typ host\r\n' +
       'a=candidate:2 1 UDP 2113937150 10.0.0.1 9999 typ host'
     );
-    const words = await compress(sdpMulti);
-    const restored = await decompress(words);
+    const words = await compress(sdpMulti, TEST_NONCE);
+    const { sdp: restored } = await decompress(words);
 
     assert.ok(restored.includes('192.168.1.42'));
     assert.ok(!restored.includes('10.0.0.1'), 'second candidate should be dropped');
+  });
+
+  it('round-trips the nonce verbatim', async () => {
+    for (const n of [[0x00, 0x00], [0xFF, 0xFF], [0xAB, 0xCD]]) {
+      const words = await compress(SAMPLE_SDP, new Uint8Array(n));
+      const { nonce } = await decompress(words);
+      assert.deepEqual(Array.from(nonce), n);
+    }
+  });
+
+  it('rejects unknown version bytes with UnknownVersionError', async () => {
+    const words = await compress(SAMPLE_SDP, TEST_NONCE);
+    // Mutate the encoded bytes to flip the version byte to 0x99.
+    // Easiest path: re-encode with a tampered first byte using internal-shape
+    // knowledge. We just call the API and corrupt the first byte of the
+    // packed payload by hand-decoding and re-encoding.
+    // (Use the public bytes round-trip via wordsToBytes is internal, so we
+    // test by constructing a minimal packed payload directly.)
+    const bad = new Uint8Array(36);
+    bad[0] = 0x99; // bogus version
+    // remaining bytes can be anything
+    const { bytesToWords } = await import('../js/signaling-internals-for-tests.mjs').catch(() => ({}));
+    if (bytesToWords) {
+      const w = bytesToWords(bad, false);
+      await assert.rejects(() => decompress(w), UnknownVersionError);
+    } else {
+      // signaling.js doesn't export internals — synthesize via header word.
+      // Header word: deflate=0, length=36 -> raw index 36.
+      // Body words: 36 bytes = 288 bits / 12 = 24 words.
+      const headerIdx = 36; // raw, length=36
+      let bits = '';
+      for (const b of bad) bits += b.toString(2).padStart(8, '0');
+      const wordIndices = [headerIdx];
+      for (let i = 0; i < bits.length; i += 12) {
+        const chunk = bits.slice(i, i + 12).padEnd(12, '0');
+        wordIndices.push(parseInt(chunk, 2));
+      }
+      const sentence = wordIndices.map((idx) => WORDLIST[idx]).join(' ');
+      await assert.rejects(() => decompress(sentence), UnknownVersionError);
+    }
+  });
+
+  it('PROTOCOL_VERSION is 0x01 for v1', () => {
+    assert.equal(PROTOCOL_VERSION, 0x01);
   });
 });
 
@@ -269,9 +318,9 @@ describe('edge cases', () => {
   });
 
   it('compress/decompress is case insensitive on input', async () => {
-    const words = await compress(SAMPLE_SDP);
+    const words = await compress(SAMPLE_SDP, TEST_NONCE);
     const upper = words.toUpperCase();
-    const restored = await decompress(upper);
+    const { sdp: restored } = await decompress(upper);
     assert.ok(restored.includes('a=fingerprint:sha-256'));
   });
 });
@@ -284,8 +333,8 @@ describe('candidate filtering', () => {
       'a=candidate:1 1 UDP 2113937151 192.168.1.42 54321 typ host',
       'a=candidate:1 1 UDP 2113937151 fe80::1 54321 typ host'
     );
-    const words = await compress(v6);
-    const restored = await decompress(words);
+    const words = await compress(v6, TEST_NONCE);
+    const { sdp: restored } = await decompress(words);
     assert.ok(!restored.includes('a=candidate:'), 'IPv6 candidate should be dropped, not packed');
     assert.ok(!restored.includes('fe80'), 'IPv6 address must not survive the codec');
   });
@@ -295,15 +344,15 @@ describe('candidate filtering', () => {
       '192.168.1.42',
       'abcd-ef01-2345.local'
     );
-    const words = await compress(mdns);
-    const restored = await decompress(words);
+    const words = await compress(mdns, TEST_NONCE);
+    const { sdp: restored } = await decompress(words);
     assert.ok(!restored.includes('a=candidate:'));
   });
 
   it('drops candidates with out-of-range octets', async () => {
     const bad = SAMPLE_SDP.replace('192.168.1.42', '300.168.1.42');
-    const words = await compress(bad);
-    const restored = await decompress(words);
+    const words = await compress(bad, TEST_NONCE);
+    const { sdp: restored } = await decompress(words);
     assert.ok(!restored.includes('a=candidate:'));
   });
 
@@ -313,8 +362,8 @@ describe('candidate filtering', () => {
       'a=candidate:1 1 UDP 2113937151 fe80::1 54321 typ host\r\n' +
       'a=candidate:2 1 UDP 2113937150 10.0.0.5 5555 typ host'
     );
-    const words = await compress(mixed);
-    const restored = await decompress(words);
+    const words = await compress(mixed, TEST_NONCE);
+    const { sdp: restored } = await decompress(words);
     assert.ok(restored.includes('10.0.0.5'));
     assert.ok(restored.includes('5555'));
   });
@@ -325,7 +374,7 @@ describe('candidate filtering', () => {
 describe('fingerprint algorithm', () => {
   it('rejects non-sha-256 fingerprints rather than truncating', async () => {
     const sha384 = SAMPLE_SDP.replace('a=fingerprint:sha-256', 'a=fingerprint:sha-384');
-    await assert.rejects(() => compress(sha384), /unsupported fingerprint algorithm/);
+    await assert.rejects(() => compress(sha384, TEST_NONCE), /unsupported fingerprint algorithm/);
   });
 
   it('replaceCredentials handles any algorithm string', async () => {
@@ -353,7 +402,7 @@ describe('deflate path', () => {
   }
 
   it('selects the deflate encoding when it is shorter', async () => {
-    const words = await compress(sdpWithRepeatingFp());
+    const words = await compress(sdpWithRepeatingFp(), TEST_NONCE);
     // Header word (index 0) has bit 11 set when deflate path is used.
     const firstWord = words.split(/\s+/)[0];
     const headerIdx = WORDLIST.indexOf(firstWord);
@@ -363,8 +412,8 @@ describe('deflate path', () => {
 
   it('deflate-encoded payload still roundtrips', async () => {
     const sdp = sdpWithRepeatingFp();
-    const words = await compress(sdp);
-    const restored = await decompress(words);
+    const words = await compress(sdp, TEST_NONCE);
+    const { sdp: restored } = await decompress(words);
     assert.ok(restored.includes('a=fingerprint:sha-256 AA:AA:AA'));
     assert.ok(restored.includes('192.168.1.42'));
   });
@@ -382,9 +431,28 @@ describe('deflate path', () => {
       /a=fingerprint:sha-256 [0-9A-F:]+/,
       'a=fingerprint:sha-256 ' + fp.join(':')
     );
-    const words = await compress(sdp);
+    const words = await compress(sdp, TEST_NONCE);
     const firstWord = words.split(/\s+/)[0];
     const headerIdx = WORDLIST.indexOf(firstWord);
     assert.equal(headerIdx & 0x800, 0, 'deflate flag should not be set on incompressible input');
+  });
+});
+
+// --- Nonce generator ---
+
+describe('generateNonce', () => {
+  it('returns a 2-byte Uint8Array', () => {
+    const n = generateNonce();
+    assert.ok(n instanceof Uint8Array);
+    assert.equal(n.length, 2);
+  });
+
+  it('produces different values across calls (probabilistically)', () => {
+    const seen = new Set();
+    for (let i = 0; i < 50; i++) {
+      const n = generateNonce();
+      seen.add((n[0] << 8) | n[1]);
+    }
+    assert.ok(seen.size > 1, 'generateNonce should not be constant');
   });
 });

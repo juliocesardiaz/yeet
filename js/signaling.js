@@ -4,11 +4,36 @@ import { WORDLIST } from './wordlist.js';
 const WORD_INDEX = new Map(WORDLIST.map((w, i) => [w, i]));
 const BITS_PER_WORD = 12; // 4096-word list
 
+// Wire format version. Bump this on any change to the packed layout, the SAS
+// HKDF inputs, the SAS extraction rule, or the wordlist. Parser rejects any
+// other value with an "update YEET" error. See ANALYSIS.md and SECURITY.md.
+export const PROTOCOL_VERSION = 0x01;
+
+export class UnknownVersionError extends Error {
+  constructor(version) {
+    super(`unknown passcode version 0x${version.toString(16).padStart(2, '0')} — both people need to be on the same version of YEET`);
+    this.name = 'UnknownVersionError';
+    this.version = version;
+  }
+}
+
 // --- Public API ---
 
-export async function compress(sdpString) {
+// Initiator (the side showing the passcode) generates the nonce and embeds it
+// in the offer code. Joiner parses it out and reuses it for HKDF so both sides
+// feed identical info into the SAS computation.
+export function generateNonce() {
+  const out = new Uint8Array(2);
+  crypto.getRandomValues(out);
+  return out;
+}
+
+export async function compress(sdpString, nonceBytes) {
+  if (!(nonceBytes instanceof Uint8Array) || nonceBytes.length !== 2) {
+    throw new Error('compress: nonceBytes must be Uint8Array(2)');
+  }
   const fields = extractSDP(sdpString);
-  const packed = packSDP(fields);
+  const packed = packSDP(fields, nonceBytes);
   const compressed = await deflate(packed);
 
   // Use whichever is shorter; high bit in header word indicates deflate
@@ -21,8 +46,9 @@ export async function compress(sdpString) {
 export async function decompress(wordString) {
   const { bytes, deflated } = wordsToBytes(wordString);
   const packed = deflated ? await inflate(bytes) : bytes;
-  const fields = unpackSDP(packed);
-  return reconstructSDP(fields);
+  const { fields, nonce } = unpackSDP(packed);
+  const sdp = await reconstructSDP(fields);
+  return { sdp, nonce };
 }
 
 // Derive ICE credentials deterministically from DTLS fingerprint.
@@ -141,20 +167,25 @@ async function reconstructSDP(fields) {
 
 // --- Binary Packing ---
 // Format (ICE credentials derived from fingerprint, not transmitted):
-//   [0]       flags: setup(2 bits) + candidateCount(2 bits) + reserved(4 bits)
-//   [1..32]   fingerprint raw bytes (SHA-256)
+//   [0]       version byte (PROTOCOL_VERSION)
+//   [1..2]    nonce (2 bytes, big-endian) — feeds HKDF info for SAS
+//   [3]       flags: setup(2 bits) + candidateCount(2 bits) + reserved(4 bits)
+//   [4..35]   fingerprint raw bytes (SHA-256)
 //   per candidate: [4 bytes IPv4] [2 bytes port BE]
 
-function packSDP(fields) {
+function packSDP(fields, nonceBytes) {
   const fp = fields.fingerprintBytes || new Uint8Array(32);
   const candidateCount = Math.min(fields.candidates.length, 3);
 
   const flags = ((fields.setup & 0x3) << 6) | ((candidateCount & 0x3) << 4);
 
-  const totalSize = 1 + 32 + (candidateCount * 6);
+  const totalSize = 1 + 2 + 1 + 32 + (candidateCount * 6);
   const buf = new Uint8Array(totalSize);
   let i = 0;
 
+  buf[i++] = PROTOCOL_VERSION;
+  buf[i++] = nonceBytes[0];
+  buf[i++] = nonceBytes[1];
   buf[i++] = flags;
   buf.set(fp, i); i += 32;
 
@@ -171,6 +202,13 @@ function packSDP(fields) {
 
 function unpackSDP(bytes) {
   let i = 0;
+  const version = bytes[i++];
+  if (version !== PROTOCOL_VERSION) {
+    throw new UnknownVersionError(version);
+  }
+
+  const nonce = new Uint8Array([bytes[i++], bytes[i++]]);
+
   const flags = bytes[i++];
   const setup = (flags >> 6) & 0x3;
   const candidateCount = (flags >> 4) & 0x3;
@@ -184,7 +222,7 @@ function unpackSDP(bytes) {
     candidates.push({ ip, port, type: 'host' });
   }
 
-  return { fingerprintBytes, setup, candidates };
+  return { fields: { fingerprintBytes, setup, candidates }, nonce };
 }
 
 // --- Deflate / Inflate (native CompressionStream) ---

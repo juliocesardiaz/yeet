@@ -52,6 +52,16 @@
         <p class="step-label waiting">waiting for connection...</p>
       </div>
 
+      <!-- SAS verification: shown to both peers after DTLS completes. -->
+      <div id="pairing-sas" class="pairing-step hidden">
+        <p class="sas-instruction">Read these numbers out loud. The other person should see the same ones.</p>
+        <div id="sas-digits" class="sas-digits" aria-live="polite">— —</div>
+        <div class="sas-actions">
+          <button id="btn-sas-match" class="btn btn-primary">They match</button>
+          <button id="btn-sas-mismatch" class="btn btn-primary">They don't match — start over</button>
+        </div>
+      </div>
+
       <p id="pairing-status" class="status"></p>
     </div>
   </div>
