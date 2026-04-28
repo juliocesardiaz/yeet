@@ -1,5 +1,10 @@
 import { replaceCredentials } from './signaling.js';
 
+function extractFingerprint(sdp) {
+  const m = sdp.match(/a=fingerprint:sha-256\s+([0-9A-Fa-f:]+)/);
+  return m ? m[1] : null;
+}
+
 export class RTCManager {
   constructor() {
     this.pc = null;
@@ -87,6 +92,19 @@ export class RTCManager {
     if (this.dc && this.dc.readyState === 'open') {
       this.dc.send(data);
     }
+  }
+
+  // Returns { local, remote } fingerprint hex strings as they appear in the
+  // negotiated SDPs. Both peers compute SAS over these — a MITM substituting
+  // certs at one or both legs makes the SAS values diverge.
+  getFingerprints() {
+    const localSdp = this.pc?.localDescription?.sdp;
+    const remoteSdp = this.pc?.remoteDescription?.sdp;
+    if (!localSdp || !remoteSdp) return null;
+    const local = extractFingerprint(localSdp);
+    const remote = extractFingerprint(remoteSdp);
+    if (!local || !remote) return null;
+    return { local, remote };
   }
 
   disconnect() {

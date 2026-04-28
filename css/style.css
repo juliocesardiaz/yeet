@@ -398,6 +398,42 @@ h1 {
 }
 
 /* ==========================================================================
+   SAS verification step
+   ========================================================================== */
+
+.sas-instruction {
+  font-size: 1rem;
+  line-height: 1.45;
+  color: var(--on-background);
+  text-align: center;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.sas-digits {
+  font-family: 'Space Grotesk', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: clamp(2.4rem, 8vw, 3.5rem);
+  letter-spacing: 0.18em;
+  text-align: center;
+  padding: 1.5rem 1rem;
+  background: var(--surface-low);
+  border-radius: var(--r-lg);
+  color: var(--primary);
+  user-select: all;
+}
+
+.sas-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+/* Both buttons primary — mismatch is the routine outcome of an attack and
+   must not look more dangerous than match. Spec open item resolution. */
+.sas-actions .btn { width: 100%; }
+
+/* ==========================================================================
    Status line
    ========================================================================== */
 

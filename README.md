@@ -31,14 +31,43 @@ Device A (Initiator)                Device B (Joiner)
                                     5. Generate answer
                                     6. Copy answer code
 7. Paste answer
-8. Direct encrypted DataChannel
+                  ── DTLS handshake ──
+8. Both screens show the same six-digit code
+9. Read the code aloud, both tap "they match"
+10. Direct encrypted DataChannel unlocks
 ```
 
-Pairing is manual: no signaling server, no third-party relay. After the two codes are exchanged, devices communicate directly.
+Pairing is manual: no signaling server, no third-party relay. After the two
+codes are exchanged, devices communicate directly.
+
+### Verification step (SAS)
+
+After the connection comes up, both devices show a six-digit code (e.g.
+`482 917`). Read it aloud. The other person should see the same one. Tap
+"they match" on both ends; the data channel does not unlock until both
+people have confirmed and both confirmations carry matching values.
+
+If the codes do not match, an attacker is between you. Tap "they don't
+match — start over" and pair again. There is no skip button.
+
+See `SECURITY.md` for the full threat model, including what the SAS does
+and does not protect against, and `ANALYSIS.md` for the architectural
+constraints behind the two-code exchange.
 
 ### Word-code format
 
-The offer/answer SDP is stripped to the essentials — DTLS fingerprint, ICE host candidate, setup role — and packed into a compact byte string (ICE credentials are derived deterministically from the fingerprint via SHA-256, so they don't need to be transmitted). The result is optionally deflate-compressed and encoded 12 bits per word against a 4096-word list.
+The offer/answer SDP is stripped to the essentials — DTLS fingerprint, ICE
+host candidate, setup role — and packed into a compact byte string with a
+1-byte version prefix and a 16-bit session nonce (used as HKDF input for
+the SAS). ICE credentials are derived deterministically from the
+fingerprint via SHA-256 and are not transmitted. The result is optionally
+deflate-compressed and encoded 12 bits per word against a 4096-word list.
+
+### Async pairing caveat
+
+"Leave a passcode, peer connects later" works for the connect step, but
+the SAS step requires both people to be reachable to compare the code.
+Without that, the connection is not authenticated.
 
 ---
 
@@ -63,17 +92,22 @@ The offer/answer SDP is stripped to the essentials — DTLS fingerprint, ICE hos
 ```
 yeet/
 ├── index.html              # Single page app
+├── ANALYSIS.md             # Phase 1 codebase map + architectural notes
+├── SECURITY.md             # Threat model and SAS guarantees
 ├── css/
 │   └── style.css
 ├── js/
-│   ├── app.js              # Entry point, pairing state machine
-│   ├── rtc.js              # RTCPeerConnection wrapper
-│   ├── signaling.js        # SDP ↔ word-code codec
+│   ├── app.js              # Entry point, pairing + SAS state machine
+│   ├── rtc.js              # RTCPeerConnection wrapper, fingerprint extraction
+│   ├── signaling.js        # SDP ↔ word-code codec, version byte, nonce
+│   ├── sas.js              # Pure HKDF SAS computation
 │   ├── wordlist.js         # 4096-word BIP39-style list
-│   ├── protocol.js         # Message type constants, JSON codec
+│   ├── protocol.js         # Message types, sas-confirm envelope
 │   └── ui.js               # DOM helpers
 └── tests/
-    ├── test-signaling.mjs  # Node test runner
+    ├── test-signaling.mjs  # Codec, nonce, version-byte tests
+    ├── test-sas.mjs        # SAS vector test
+    ├── sas-vectors.json    # Hand-computed SAS triples (the contract)
     └── test-connection.html # In-browser RTC smoke test
 ```
 
@@ -95,19 +129,33 @@ Peer disconnect is detected via `RTCPeerConnection.connectionState` — no wire-
 ## Security
 
 - **WebRTC DTLS encryption** on all data channel traffic.
+- **Short Authentication String (SAS)** verifies end-to-end identity after
+  DTLS comes up. The data channel is application-gated until both peers
+  exchange a valid `sas-confirm` AND the local user taps "they match." See
+  `SECURITY.md`.
 - **No server, no accounts, no cloud** — nothing stored or relayed.
 - **No third-party JS dependencies** — only Google Fonts is loaded from a CDN.
-- Word codes must be shared over a channel you trust (screen, messaging, voice); an attacker who can inject their own code into that channel can redirect the connection, which is the standard manual-signaling trade-off.
+- The word code can be shared over an untrusted channel; the SAS catches
+  network-level tampering at the verification step.
 
 ---
 
 ## Running Tests
 
 ```bash
-node --test tests/test-signaling.mjs
+node --test tests/test-signaling.mjs tests/test-sas.mjs
 ```
 
-The in-browser smoke test (`tests/test-connection.html`) can be opened directly in a browser to exercise the RTC stack.
+The SAS vector test (`tests/test-sas.mjs`) is the contract that prevents
+silent cross-browser SAS divergence. Vectors at `tests/sas-vectors.json`
+are hand-computed from the spec and cross-verified against an independent
+HKDF implementation; do not regenerate them mechanically without bumping
+`PROTOCOL_VERSION`.
+
+The in-browser smoke test (`tests/test-connection.html`) can be opened
+directly in a browser to exercise the RTC stack. For pre-release sign-off,
+also run the manual cross-browser pairing matrix in `ANALYSIS.md` /
+SECURITY-spec Phase 3.
 
 ---
 
